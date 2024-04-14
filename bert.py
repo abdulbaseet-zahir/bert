@@ -1,142 +1,224 @@
-import math
 import torch
 from torch import nn
-import math
-import torch
-from torch import nn
-import torch.nn.functional as F
 
 
 class BertEmbedding(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        max_seq_length,
-        n_segments=2,
-        dropout=0.1,
-        pad_token_id=0,
-    ):
+    def __init__(self, config):
         super().__init__()
-        self.token_embedding = nn.Embedding(
-            vocab_size, hidden_size, padding_idx=pad_token_id
+        self.word_embeddings = nn.Embedding(
+            config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id
         )
-        self.position_embedding = nn.Embedding(max_seq_length, hidden_size)
-        self.segment_embedding = nn.Embedding(n_segments, hidden_size)
-        self.layer_norm = nn.LayerNorm(hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(p=dropout)
-        self.position_ids = torch.arange(max_seq_length).expand((1, -1))
-        self.segment_ids = torch.zeros(self.position_ids.size(), dtype=torch.long)
+        self.position_embeddings = nn.Embedding(
+            config.sequence_length, config.hidden_size
+        )
+        self.token_type_embeddings = nn.Embedding(config.segments, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, input_ids, segment_ids):
+    def forward(self, token_ids, token_type_ids, position_ids=None):
+        if position_ids is None:
+            position_ids = torch.arange(token_ids.size(1)).expand((1, -1))
         embeddings = (
-            self.token_embedding(input_ids)
-            + self.segment_embedding(segment_ids)
-            + self.position_embedding(self.position_ids)
+            self.word_embeddings(token_ids)
+            + self.token_type_embeddings(token_type_ids)
+            + self.position_embeddings(position_ids)
         )
-        embeddings = self.layer_norm(embeddings)
+        embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
 
 
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, num_heads, d_model, dropout=0.1):
+class SelfAttention(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
+        self.hidden_size = config.hidden_size
+        self.attention_heads = config.attention_heads
+        self.head_dim = self.hidden_size // self.attention_heads
 
-        assert (
-            self.head_dim * num_heads == d_model
-        ), "d_model must be divisible by num_heads"
-
-        self.query_projection = nn.Linear(d_model, d_model)
-        self.key_projection = nn.Linear(d_model, d_model)
-        self.value_projection = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.query = nn.Linear(self.hidden_size, self.hidden_size)
+        self.key = nn.Linear(self.hidden_size, self.hidden_size)
+        self.value = nn.Linear(self.hidden_size, self.hidden_size)
 
     def transpose_for_scores(self, x):
         batch_size = x.size(0)
-        return x.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        return x.view(batch_size, -1, self.attention_heads, self.head_dim).transpose(
+            1, 2
+        )
 
-    def forward(self, queries, keys, values, mask=None):
-        batch_size = queries.size(0)
+    def forward(self, inputs, mask=None):
+        q, k, v = inputs, inputs, inputs
+        batch_size = q.size(0)
 
-        query = self.transpose_for_scores(self.query_projection(queries))
-        key = self.transpose_for_scores(self.key_projection(keys))
-        value = self.transpose_for_scores(self.value_projection(values))
+        q = self.transpose_for_scores(self.query(q))
+        k = self.transpose_for_scores(self.key(k))
+        v = self.transpose_for_scores(self.value(v))
 
-        scores = torch.matmul(query, key.transpose(-2, -1)) / torch.sqrt(
+        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(
             torch.tensor(self.head_dim, dtype=torch.float)
         )
 
         if mask is not None:
             mask = mask[:, None, None, :]
             scores = scores.masked_fill(mask == 0, float("-inf"))
-        attention = F.softmax(scores, dim=-1)
-        attention = self.dropout(attention)
 
-        context = torch.matmul(attention, value)
+        attention = nn.functional.softmax(scores, dim=-1)
+        context = torch.matmul(attention, v)
         context = (
-            context.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+            context.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_size)
         )
         return context
 
 
-class PositionWiseFeedForward(nn.Module):
-    def __init__(self, hidden_size, inner_size, dropout_rate=0.1):
-        super(PositionWiseFeedForward, self).__init__()
-        self.fc1 = nn.Linear(hidden_size, inner_size)
-        self.fc2 = nn.Linear(inner_size, hidden_size)
-        self.dropout = nn.Dropout(dropout_rate)
-
-    def forward(self, tensor):
-        tensor = F.gelu(self.fc1(tensor))
-        tensor = self.dropout(tensor)
-        tensor = self.fc2(tensor)
-        return tensor
-
-
-class BertBlock(nn.Module):
-    def __init__(self, attention_heads, hidden_size, inner_size, dropout_rate=0.1):
+class AttentionOutput(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        self.attention = MultiHeadedAttention(attention_heads, hidden_size)
-        self.projection = nn.Linear(hidden_size, hidden_size)
-        self.norm1 = nn.LayerNorm(hidden_size)
-        self.feed_forward = PositionWiseFeedForward(hidden_size, inner_size)
-        self.norm2 = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout_rate)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, mask):
-        attention_output = self.attention(x, x, x, mask)
-        projected_output = self.projection(attention_output)
-        norm1_output = self.norm1(x + self.dropout(projected_output))
-        feed_forward_output = self.feed_forward(norm1_output)
-        norm2_output = self.norm2(norm1_output + self.dropout(feed_forward_output))
-        return norm2_output
+    def forward(self, inputs, context):
+        outputs = self.dense(context)
+        outputs = self.dropout(outputs)
+        outputs = self.LayerNorm(outputs + inputs)
+        return outputs
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.self = SelfAttention(config)
+        self.output = AttentionOutput(config)
+
+    def forward(self, inputs, mask):
+        context = self.self(inputs, mask)
+        outputs = self.output(inputs, context)
+        return outputs
+
+
+class Intermediate(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
+
+    def forward(self, inputs):
+        outputs = self.dense(inputs)
+        outputs = nn.functional.gelu(outputs)
+        return outputs
+
+
+class BertOutput(nn.Module):
+    def __init__(self, config):
+        super(BertOutput, self).__init__()
+        self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, intermediate_output, attention_output):
+        outputs = self.dense(intermediate_output)
+        outputs = self.dropout(outputs)
+        outputs = self.LayerNorm(outputs + attention_output)
+        return outputs
 
 
 class BertEncoder(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        inner_size,
-        max_seq_length,
-        attention_heads,
-        num_layers,
-    ):
+    def __init__(self, config):
         super(BertEncoder, self).__init__()
-        self.embedding = BertEmbedding(vocab_size, hidden_size, max_seq_length)
-        self.encoder_blocks = nn.ModuleList(
+        self.attention = AttentionBlock(config)
+        self.intermediate = Intermediate(config)
+        self.output = BertOutput(config)
+
+    def forward(self, inputs, mask):
+        attention_output = self.attention(inputs, mask)
+        intermediate_output = self.intermediate(attention_output)
+        output = self.output(intermediate_output, attention_output)
+        return output
+
+
+class BertPooler(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.activation = nn.Tanh()
+
+    def forward(self, inputs):
+        first_token_tensor = inputs[:, 0]
+        pooled_output = self.dense(first_token_tensor)
+        pooled_output = self.activation(pooled_output)
+        return pooled_output
+
+
+class Bert(nn.Module):
+    def __init__(self, config):
+        super(Bert, self).__init__()
+        self.embeddings = BertEmbedding(config)
+        self.encoder = nn.ModuleDict(
             [
-                BertBlock(attention_heads, hidden_size, inner_size)
-                for _ in range(num_layers)
+                [
+                    f"layer_{str(i)}",
+                    BertEncoder(config),
+                ]
+                for i in range(config.layers)
             ]
         )
+        self.pooler = BertPooler(config)
 
     def forward(self, tokens, segments, attention_mask):
-        encoded_tokens = self.embedding(tokens, segments)
-        for encoder_block in self.encoder_blocks:
+        encoded_tokens = self.embeddings(tokens, segments)
+        for _, encoder_block in self.encoder.items():
             encoded_tokens = encoder_block(encoded_tokens, attention_mask)
-        return encoded_tokens
+        pooled_output = self.pooler(encoded_tokens)
+        return encoded_tokens, pooled_output
+
+
+class BertTransformHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+
+    def forward(self, hidden_states):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = nn.functional.gelu(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states)
+        return hidden_states
+
+
+class BertPredictionHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.transform = BertTransformHead(config)
+        self.dense = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.output_bias = nn.Parameter(torch.zeros(config.vocab_size))
+        self.dense.bias = self.output_bias
+
+    def forward(self, hidden_states):
+        hidden_states = self.transform(hidden_states)
+        hidden_states = self.dense(hidden_states)
+        return hidden_states
+
+
+class CLS(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.predictions = BertPredictionHead(config)
+        self.seq_relationship = nn.Linear(config.hidden_size, config.classes)
+
+    def forward(self, sequence_output, pooled_output):
+        prediction_scores = self.predictions(sequence_output)
+        seq_relationship_score = self.seq_relationship(pooled_output)
+        return prediction_scores, seq_relationship_score
+
+
+class BertForPreTraining(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.bert = Bert(config)
+        self.cls = CLS(config)
+
+    def forward(self, tokens, segments, attention_mask):
+        sequence_output, pooled_output = self.bert(tokens, segments, attention_mask)
+
+        prediction_scores, seq_relationship_score = self.cls(
+            sequence_output, pooled_output
+        )
+        return sequence_output, pooled_output, prediction_scores, seq_relationship_score
