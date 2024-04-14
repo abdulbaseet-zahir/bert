@@ -3,23 +3,17 @@ from torch import nn
 
 
 class BertEmbedding(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        sequence_length,
-        token_types=2,
-        dropout=0.1,
-        pad_token_id=0,
-    ):
+    def __init__(self, config):
         super().__init__()
         self.word_embeddings = nn.Embedding(
-            vocab_size, hidden_size, padding_idx=pad_token_id
+            config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id
         )
-        self.position_embeddings = nn.Embedding(sequence_length, hidden_size)
-        self.token_type_embeddings = nn.Embedding(token_types, hidden_size)
-        self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(0.1)
+        self.position_embeddings = nn.Embedding(
+            config.sequence_length, config.hidden_size
+        )
+        self.token_type_embeddings = nn.Embedding(config.segments, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, token_ids, token_type_ids, position_ids=None):
         if position_ids is None:
@@ -35,15 +29,15 @@ class BertEmbedding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, hidden_size, attention_heads):
+    def __init__(self, config):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.attention_heads = attention_heads
-        self.head_dim = hidden_size // attention_heads
+        self.hidden_size = config.hidden_size
+        self.attention_heads = config.attention_heads
+        self.head_dim = self.hidden_size // self.attention_heads
 
-        self.query = nn.Linear(hidden_size, hidden_size)
-        self.key = nn.Linear(hidden_size, hidden_size)
-        self.value = nn.Linear(hidden_size, hidden_size)
+        self.query = nn.Linear(self.hidden_size, self.hidden_size)
+        self.key = nn.Linear(self.hidden_size, self.hidden_size)
+        self.value = nn.Linear(self.hidden_size, self.hidden_size)
 
     def transpose_for_scores(self, x):
         batch_size = x.size(0)
@@ -76,11 +70,11 @@ class SelfAttention(nn.Module):
 
 
 class AttentionOutput(nn.Module):
-    def __init__(self, hidden_size, dropout=0.1):
+    def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
-        self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(0.1)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, inputs, context):
         outputs = self.dense(context)
@@ -90,10 +84,10 @@ class AttentionOutput(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    def __init__(self, hidden_size, attention_heads):
+    def __init__(self, config):
         super().__init__()
-        self.self = SelfAttention(hidden_size, attention_heads)
-        self.output = AttentionOutput(hidden_size)
+        self.self = SelfAttention(config)
+        self.output = AttentionOutput(config)
 
     def forward(self, inputs, mask):
         context = self.self(inputs, mask)
@@ -102,9 +96,9 @@ class AttentionBlock(nn.Module):
 
 
 class Intermediate(nn.Module):
-    def __init__(self, hidden_size, intermediate_size):
+    def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(hidden_size, intermediate_size)
+        self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
 
     def forward(self, inputs):
         outputs = self.dense(inputs)
@@ -113,11 +107,11 @@ class Intermediate(nn.Module):
 
 
 class BertOutput(nn.Module):
-    def __init__(self, hidden_size, intermediate_size):
+    def __init__(self, config):
         super(BertOutput, self).__init__()
-        self.dense = nn.Linear(intermediate_size, hidden_size)
-        self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
-        self.dropout = nn.Dropout(0.1)
+        self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, intermediate_output, attention_output):
         outputs = self.dense(intermediate_output)
@@ -127,13 +121,11 @@ class BertOutput(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(
-        self, attention_heads, hidden_size, intermediate_size, dropout_rate=0.1
-    ):
+    def __init__(self, config):
         super(BertEncoder, self).__init__()
-        self.attention = AttentionBlock(hidden_size, attention_heads)
-        self.intermediate = Intermediate(hidden_size, intermediate_size)
-        self.output = BertOutput(hidden_size, intermediate_size)
+        self.attention = AttentionBlock(config)
+        self.intermediate = Intermediate(config)
+        self.output = BertOutput(config)
 
     def forward(self, inputs, mask):
         attention_output = self.attention(inputs, mask)
@@ -143,9 +135,9 @@ class BertEncoder(nn.Module):
 
 
 class BertPooler(nn.Module):
-    def __init__(self, hidden_size):
+    def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, inputs):
@@ -156,27 +148,19 @@ class BertPooler(nn.Module):
 
 
 class Bert(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        intermediate_size,
-        max_seq_length,
-        attention_heads,
-        num_layers,
-    ):
+    def __init__(self, config):
         super(Bert, self).__init__()
-        self.embeddings = BertEmbedding(vocab_size, hidden_size, max_seq_length)
+        self.embeddings = BertEmbedding(config)
         self.encoder = nn.ModuleDict(
             [
                 [
                     f"layer_{str(i)}",
-                    BertEncoder(attention_heads, hidden_size, intermediate_size),
+                    BertEncoder(config),
                 ]
-                for i in range(num_layers)
+                for i in range(config.layers)
             ]
         )
-        self.pooler = BertPooler(hidden_size)
+        self.pooler = BertPooler(config)
 
     def forward(self, tokens, segments, attention_mask):
         encoded_tokens = self.embeddings(tokens, segments)
@@ -187,10 +171,10 @@ class Bert(nn.Module):
 
 
 class BertTransformHead(nn.Module):
-    def __init__(self, hidden_size):
+    def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(hidden_size, hidden_size)
-        self.LayerNorm = nn.LayerNorm(hidden_size, eps=1e-12)
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, config.norm_eps)
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
@@ -200,11 +184,11 @@ class BertTransformHead(nn.Module):
 
 
 class BertPredictionHead(nn.Module):
-    def __init__(self, hidden_size, vocab_size):
+    def __init__(self, config):
         super().__init__()
-        self.transform = BertTransformHead(hidden_size)
-        self.dense = nn.Linear(hidden_size, vocab_size, bias=False)
-        self.output_bias = nn.Parameter(torch.zeros(vocab_size))
+        self.transform = BertTransformHead(config)
+        self.dense = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.output_bias = nn.Parameter(torch.zeros(config.vocab_size))
         self.dense.bias = self.output_bias
 
     def forward(self, hidden_states):
@@ -214,10 +198,10 @@ class BertPredictionHead(nn.Module):
 
 
 class CLS(nn.Module):
-    def __init__(self, hidden_size, vocab_size, num_classes=2):
+    def __init__(self, config):
         super().__init__()
-        self.predictions = BertPredictionHead(hidden_size, vocab_size)
-        self.seq_relationship = nn.Linear(hidden_size, num_classes)
+        self.predictions = BertPredictionHead(config)
+        self.seq_relationship = nn.Linear(config.hidden_size, config.classes)
 
     def forward(self, sequence_output, pooled_output):
         prediction_scores = self.predictions(sequence_output)
@@ -226,26 +210,10 @@ class CLS(nn.Module):
 
 
 class BertForPreTraining(nn.Module):
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        intermediate_size,
-        max_seq_length,
-        attention_heads,
-        num_layers,
-        num_classes,
-    ):
+    def __init__(self, config):
         super().__init__()
-        self.bert = Bert(
-            vocab_size,
-            hidden_size,
-            intermediate_size,
-            max_seq_length,
-            attention_heads,
-            num_layers,
-        )
-        self.cls = CLS(hidden_size, vocab_size, num_classes)
+        self.bert = Bert(config)
+        self.cls = CLS(config)
 
     def forward(self, tokens, segments, attention_mask):
         sequence_output, pooled_output = self.bert(tokens, segments, attention_mask)

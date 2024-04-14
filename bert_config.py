@@ -3,20 +3,24 @@ class BertConfig:
         self,
         vocab_size=30522,
         hidden_size=768,
-        num_layers=12,
-        num_attention_heads=12,
-        inner_size=3072,
-        dropout_prob=0.1,
-        max_seq_length=512,
-        n_segments=2,
+        layers=12,
+        attention_heads=12,
+        intermediate_size=3072,
+        sequence_length=512,
+        classes=2,
+        segments=2,
         pad_token_id=0,
+        dropout=0.1,
+        norm_eps=1e-12,
     ):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.num_attention_heads = num_attention_heads
-        self.inner_size = inner_size
-        self.dropout_prob = dropout_prob
-        self.max_seq_length = max_seq_length
-        self.n_segments = n_segments
+        self.layers = layers
+        self.attention_heads = attention_heads
+        self.intermediate_size = intermediate_size
+        self.sequence_length = sequence_length
+        self.classes = classes
+        self.segments = segments
         self.pad_token_id = pad_token_id
+        self.dropout = dropout
+        self.norm_eps = norm_eps
